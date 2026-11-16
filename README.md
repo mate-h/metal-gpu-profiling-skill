@@ -9,7 +9,7 @@ Claude loads `SKILL.md` automatically when a task involves GPU profiling on a Ma
 Clone it into your user skills folder:
 
 ```bash
-git clone git@github.com:mate-h/metal-gpu-profiling-skill.git ~/.claude/skills/metal-gpu-profiling
+git clone https://github.com/mate-h/metal-gpu-profiling-skill.git ~/.claude/skills/metal-gpu-profiling
 ```
 
 The skill is picked up from the next Claude Code session onward, in every project.
@@ -63,3 +63,7 @@ S=/path/to/scratch WARM=45 SECS=2 FRAME=<once-per-frame pass label> \
 See the header of `scripts/xctrace_profile.sh` for all options (`PID=` to attach to a running app, `COUNTERS=0`, `COUNTER_PROFILE`, `GPU_IDLE`, `KEEP_XML`).
 
 Recordings are large. A trace is 0.3–3 GB, and each one leaves a raw `instruments*.ktrace` of 0.5–5 GB in the per-user temp folder. The script deletes both when it finishes. Only one recorder can run on a machine at a time.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
