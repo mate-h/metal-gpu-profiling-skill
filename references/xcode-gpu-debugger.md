@@ -28,13 +28,21 @@ gpudebug --oneshot -q -t x.gputrace -c "profile load" -c "go performance" -c "go
   `profile run` printed empty tables.
 - `--embed` stores the profile in the trace, so Xcode opens it straight into its Performance view.
 - Navigate one level at a time (`go performance`, `go encoders`). Absolute paths like
-  `go /performance/x` error.
+  `go /performance/x` error; `go /` and `go ..` work. `go` also prints the node it lands on.
 - Sessions die with the shell, so always use `--oneshot`. The `-o` flag is ignored in oneshot
   mode. Fetched files land in `$(getconf DARWIN_USER_TEMP_DIR)gpudebug_out/`; clean it up.
-- Output has `\r` progress lines: pipe it through `tr '\r' '\n' | awk '!seen[$0]++'`.
+- Output has `\r` progress lines: pipe it through `tr '\r' '\n' | awk '!seen[$0]++'`. With
+  `--json` don't dedupe: repeated listings are identical lines and the awk drops them.
+- `--json` prints one JSON value per listing (`{"children": [{"name", "values": [...]}]}`, values
+  positional in the text table's column order) and per `info`.
 - **You get:** serial per-encoder Vertex/Fragment/Compute ms, per-draw and per-kernel cost, and
   per-draw counters (instruction mix, for example 50% integer and conditional ALU in a water
-  shader).
+  shader). `info <encoder>` under `performance/encoders` gives that encoder's limiters (F32,
+  instruction throughput, texture read/filtering/cache, ...), occupancy, instruction count and
+  tile size, measured on the replay, so they don't mix with concurrent passes like xctrace's
+  GPU-wide counters. `info <shader>` under `performance/shaders` gives temporary/uniform
+  registers, spilled bytes and the instruction mix, even for captures without the compiler
+  statistics files `gputrace_stats.py` reads (a small Metal app's capture had none).
 - **You don't get:** per-line or per-function shader cost, which the CLI doesn't expose.
   Heatmaps exist but are tile-sampled and nearly uniform.
 - **Pitfall:** the replay can silently drop every render command buffer. Two captures of a
@@ -62,20 +70,37 @@ Getting to the shader source pane:
 
 Double-clicking a row in the Shaders table does not open the source.
 
-The whole loop runs from the CLI with `xcode_ax` (tested Nov 2026, about a minute end to end):
+The whole loop runs from the CLI with `xcode_ax` (tested Nov 2026, under 30 s end to end once
+Xcode has the capture open). The MCP server in `mcp/` runs exactly this as `xcode_open` and
+`xcode_call_stack`:
 
 ```bash
-open -a Xcode x.gputrace                       # wait ~25 s; it opens on Summary
-xcode_ax press "Open Performance"; xcode_ax press Shaders; xcode_ax shaders
-xcode_ax press Navigators                      # then type the pipeline label into the navigator
-                                               # filter (osascript: set the text field's value, Return)
-xcode_ax locate "4444 [drawIndexedPrimitives:..."   # or click the draw row by position
-xcode_ax locate "Fragment Function"            # double-click it with a CGEvent click (clickState 2)
+open -a Xcode x.gputrace                       # it opens on Summary
+xcode_ax wait "Open Performance" 120; xcode_ax press "Open Performance"
+xcode_ax wait Shaders 120; xcode_ax press Shaders; xcode_ax shaders
+xcode_ax press Navigators                      # toggles; only if "Filter the trace list" is missing
+xcode_ax filter composite_pass                 # the navigator's filter, then Return
+xcode_ax activate; xcode_ax click $(xcode_ax locate "[draw" --contains) 1     # "[dispatch" for compute
+xcode_ax wait "Fragment Function" 30           # "Vertex Function", "Kernel Function"
+xcode_ax activate; xcode_ax click $(xcode_ax locate "Fragment Function") 2
 xcode_ax choose "Source Files" "Call Stack"; xcode_ax callstack tree.txt
 ```
 
-A double-click that lands too far right on a row does nothing. Aim near the label (x ≈ 400 for
-Bound Resources rows), and bring Xcode to the front first.
+(In zsh, split the coordinates: `xy=$(xcode_ax locate ...); xcode_ax click ${xy% *} ${xy#* } 1`.)
+
+- A double-click that lands too far right on a row does nothing. Aim near the label (x ≈ 400 for
+  Bound Resources rows; `locate` aims at most 200 pt in from a row's left edge), and bring Xcode
+  to the front first.
+- Selecting a navigator row through accessibility (`xcode_ax select`, setting `AXSelected`)
+  succeeds but doesn't navigate: the draw needs a real click.
+- With the navigator hidden, the Performance view's own "Filter the profiling timeline" field is
+  the only filter field. `filter` therefore targets "Filter the trace list" by name and fails when
+  the navigator is hidden.
+- In the Performance view, a capture window's title is empty and it has no `AXDocument`.
+  `xcode_ax windows` tells capture windows apart by their debugger controls ("Open
+  Performance", "Stop GPU workload", a "Performance" jump-bar popup), and `raise` / `close`
+  take a window index (`#0`). With two captures open you can't tell which is which, so keep one
+  open at a time.
 
 Build the reader once:
 

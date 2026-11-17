@@ -48,10 +48,25 @@ If the pull refuses because both machines have local commits, run `git pull --re
 | `scripts/gputrace_capture.sh`, `gputrace_lldb.py` | Metal frame capture (`.gputrace`) of a running app without Xcode, via lldb |
 | `scripts/gputrace_stats.py` | Per-pipeline registers, spills, instruction mix and optimizer remarks from a capture |
 | `scripts/xcode_ax.swift` | Reads Xcode's Metal debugger views through the accessibility API (`swiftc -O xcode_ax.swift -o xcode_ax`) |
+| `mcp/` | `metal-debug-mcp`, an MCP server exposing all of the above as tools, plus a small labeled Metal sample app to check a machine with. See `mcp/README.md` |
 | `references/apple-gpu-patterns.md` | Measured wins and non-wins on Apple GPUs |
 | `references/counter-profiles.md` | Picking a GPU counter set from the CLI, and finding its number on a new machine |
 | `references/gputrace.md` | Captures and their statistics |
 | `references/xcode-gpu-debugger.md` | Replayed profiles with `gpudebug` and Xcode's Metal debugger |
+
+## MCP server
+
+`mcp/` builds `metal-debug-mcp`, an MCP server (stdio) for capture, noise-free replay timings and counters, xctrace recordings, and Xcode's per-function shader cost through the GUI:
+
+```bash
+cd ~/.claude/skills/metal-gpu-profiling/mcp && swift build -c release
+```
+
+```bash
+claude mcp add metal-debug --scope user -- ~/.claude/skills/metal-gpu-profiling/mcp/.build/release/metal-debug-mcp
+```
+
+See [mcp/README.md](mcp/README.md) for the tools, requirements and limits.
 
 ## Running the profiler by hand
 

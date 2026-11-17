@@ -2,3 +2,5 @@
 *.trace
 *.gputrace
 __pycache__/
+.build/
+.swiftpm/
