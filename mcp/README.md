@@ -6,12 +6,13 @@ An MCP server for Metal GPU debugging on Apple Silicon. It exposes the skill's c
 |---|---|---|
 | `environment` | Checks the Xcode/macOS versions, `gpudebug`, Accessibility, a running xctrace, GPU load, free disk and open captures | |
 | `capture` | `.gputrace` of a running app, without Xcode | `scripts/gputrace_capture.sh` (lldb) |
-| `list_captures`, `delete_capture` | Manage the server's capture folder | |
+| `list_captures`, `delete_capture` | Manage the server's capture folder. `delete_capture` also clears stale Metal shader archive folders from the user cache | `scripts/gpu_cache_cleanup.sh` |
 | `replay_profile` | Replays the capture pass by pass and embeds the profile | `gpudebug` |
 | `replay_encoders` | Per-encoder GPU time with no noise from other GPU load, grouped by label. Warns when the replay dropped the render passes | `gpudebug --json` |
 | `replay_encoder` | One encoder's limiters, occupancy, instruction count and tile size | `gpudebug` |
 | `replay_shaders` | Each shader's cost, registers, spills and instruction mix | `gpudebug` |
 | `replay_query` | Raw `gpudebug` commands | `gpudebug` |
+| `line_costs` | Per-source-line and per-function shader cost of an encoder's shader (Xcode's source-pane figures), from the embedded profile. CPU only, no GUI | `scripts/shader_line_costs` (Xcode's private profiler frameworks) |
 | `compiler_stats` | Compiler statistics and optimizer remarks stored in a capture, when it has them | `scripts/gputrace_stats.py` |
 | `record_passes` | Live per-pass time, with counters, from an xctrace Metal System Trace | `scripts/xctrace_profile.sh` |
 | `xcode_open` | Opens a capture in Xcode with its profile embedded, in the Performance view | Accessibility |

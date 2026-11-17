@@ -43,7 +43,8 @@ gpudebug --oneshot -q -t x.gputrace -c "profile load" -c "go performance" -c "go
   GPU-wide counters. `info <shader>` under `performance/shaders` gives temporary/uniform
   registers, spilled bytes and the instruction mix, even for captures without the compiler
   statistics files `gputrace_stats.py` reads (a small Metal app's capture had none).
-- **You don't get:** per-line or per-function shader cost, which the CLI doesn't expose.
+- **You don't get:** per-line or per-function shader cost from gpudebug itself. Read them from the
+  embedded profile with `scripts/shader_line_costs` (next section).
   Heatmaps exist but are tile-sampled and nearly uniform.
 - **Pitfall:** the replay can silently drop every render command buffer. Two captures of a
   modified build listed only the compute passes, while a capture of the unmodified build
@@ -51,7 +52,77 @@ gpudebug --oneshot -q -t x.gputrace -c "profile load" -c "go performance" -c "go
   printed, even without `-q`, and the cause is unknown. Always check that the encoder list
   contains the pass before reading numbers. If it doesn't, fall back to xctrace A/B runs.
 
-## Xcode: per-function cost and registers
+## Per-line and per-function cost: `scripts/shader_line_costs`
+
+Reads the profile that `profile run --embed` stored in the trace and prints, for one shader, every
+MSL line's share of sampled cost, its instruction count and text, plus inclusive per-function rows
+(`f`) on their declaration lines. Those are the figures Xcode's source pane shows: all 568 lines of
+two shaders (a 1,758-instruction kernel and a 3,430-instruction fragment shader) matched Xcode
+within 0.01% (Nov 2026, Xcode 27.2, M5). No GUI, no replay and no GPU are involved. It needs about
+15 s of CPU, almost all of it loading the profile.
+
+```bash
+scripts/shader_line_costs x.gputrace --list                          # encoders: label, time, pipelines, stages
+scripts/shader_line_costs x.gputrace --encoder hair_raster --top 30  # costliest lines and functions
+scripts/shader_line_costs x.gputrace --encoder hair_shade --min 0 --source-out shade.metal
+scripts/shader_line_costs x.gputrace --pipeline 217 --stage fragment --json
+```
+
+- The wrapper compiles `shader_line_costs.m` on first use into
+  `~/Library/Caches/metal-debug-mcp/` (`SHADER_LINE_COSTS_BIN` moves it). MCP tool: `line_costs`.
+- `--encoder` sums every encoder with that label (one per captured frame); `--occurrence N` picks
+  one. With several pipelines in the encoder it takes the costliest and lists the others. Scope
+  barely matters for a steady scene: encoder, pipeline and trace scopes differed by under 0.05
+  points.
+- Function rows follow Xcode's call tree. A function inlined in several places shows its cost
+  under the entry point, not the sum of all copies: `azimuthal` shows 9.98%, while another 3.20%
+  sits inside the outlined `hair_bsdf`. A function the compiler kept as a real call counts in full
+  toward the functions along its first call site, so `dom_depth`'s 46% went to `channel_depth`
+  even though `fs` also calls it. Library functions (`clamp`, `mix`, `exp`) have no line in the
+  program source and are listed at the end.
+- It needs debug info in the shader binary. wgpu's MSL has it. A stage without it, such as a
+  tiny vertex shader, fails with a message.
+- Lines can show cost on a declaration or a `struct` line. That is where the debug info put those
+  instructions, and Xcode shows them there too.
+
+How it works, for when an Xcode update breaks it (all private API, loaded with `dlopen`):
+1. `GTShaderProfilerStreamData +dataFromArchivedDataURL:` on `<trace>/<name>_stream_0.gpuprofiler_raw`,
+   then `GTShaderProfilerStreamDataProcessor -initWithStreamData:llvmHelperPath:` (the helper is
+   `GTLLVMHelper` in the MacOSX platform's `GPUToolsPlatform/PlugIns`), `processStreamData`,
+   `waitUntilFinished`. These classes are in
+   `Xcode.app/Contents/PlugIns/GPUDebugger.ideplugin/Contents/Frameworks/GTShaderProfiler.framework`.
+   On an M5 the result is a `GTMioShaderProfilerResult`. The older
+   `DYShaderProfilerResult -perLineInfoForProgramInfo:...` in `GPUToolsShaderProfiler.framework`
+   is not what Xcode uses on this GPU.
+2. Pitfalls, each of which cost an hour:
+   - Keep the processor alive. Its dealloc frees the cost data: pipeline ids read -1, `costCount`
+     reads 0, and the cost calls crash.
+   - Poll `mioData.loadingProgress` (0–100) after `waitUntilFinished`. It is still 0 at that
+     point.
+   - Run on the main thread. From a dispatch queue, the result came out with no binaries.
+   - Every cost call, even `usedInEncoder:`, crashes on a binary/scope pair that has no table,
+     such as a vertex shader seen in only one of two encoders. Check the binary's `costs` array
+     first: entries with kind 3 are its totals, with `sub` = scope and `u2` = id.
+3. `pipelineStates[i].binaryKeys[stage]` → `shaderBinaries[key]` is a `GTMioShaderBinaryData`.
+   `costForLine:fullPathIndex:scope:scopeIdentifier:cost:numInstructions:` fills a
+   `GTMioCostInfo` (304 bytes: a 16-byte context, then `d0`, `d0[10]`, `d1`, `d1[10]`, sample
+   counts). **Xcode's percent is (d0 + d1) of the line over (d0 + d1) of
+   `costForScope:scopeIdentifier:cost:` for the binary.** `d0` alone was 0.4–1.4 points off.
+   Scopes: 0 = trace, 2 = encoder (encoder function index), 3 = pipeline (object id). The file is
+   `/program_source`.
+4. Function rows come from the debug info. Locations are `{file, function string, line, column}`.
+   Ranges are packed 28-byte records `{first instruction, offset, size, first location, count}`
+   giving each instruction's inline chain, outermost first. Per-instruction cost comes from
+   `instructionCostsForScope:scopeIdentifier:`. Call sites of outlined functions are found from
+   the source text, because the ISA text is empty without Xcode's ISA printer.
+5. Labels: the encoder's `functionIndex` is its position in the capture's `capture` function stream
+   (`DYCaptureArchive` → `openFileWithFilename:@"capture"` → `openFunctionStream:` →
+   `readFunction`). wgpu's `setLabel:` is the next call. Its second argument has type 14, a C
+   string.
+6. Source: the capture stores each MSL source as a hash-named text file in the bundle. The tool
+   picks the one that defines the most of the binary's functions.
+
+## Xcode GUI: per-function cost tree and registers
 
 `open -a Xcode x.gputrace`. With an embedded profile, Xcode opens straight to Performance.
 
@@ -125,20 +196,12 @@ The terminal needs Accessibility permission.
   showed 252 allocated registers and 3.08 KiB spilled there, against 126 temporary registers and
   3,152 stack bytes in the compiler statistics.
 
-## Per-line cost: don't spend time on it through accessibility
+## Per-line cost through accessibility: don't
 
-The source pane draws a cost pie on each costed line (elements with `AXIdentifier`
-`CostElement<pct>`, about 500 for a 4,400-line shader). The values can be read, but not which line
-each belongs to:
-- Pie views are recycled. Hidden ones keep stale positions, and several report the same height.
-- `AXVisibleChildren` is empty.
-- Pressing a pie doesn't move the selection.
-- Lines wrap, and `AXBoundsForRange` is valid only near the visible range.
-
-Mapping by position put the 100% pie on an unrelated local variable. Reading the pies from
-screenshots has the same line-mapping problem. **The
-per-function Call Stack tree is the reliable level.** Pair it with the MSL from
-`xcode_ax source` and the WGSL to see which statements a function holds.
+Use `scripts/shader_line_costs` instead. The source pane's cost pies (`CostElement<pct>`) can be
+read through accessibility, but their views are recycled and keep stale positions, so they can't
+be mapped to lines. Screenshot + OCR sweeps of the gutter worked but took about 2 minutes per
+shader and took over the screen.
 
 ## Reading the costs
 
@@ -146,8 +209,9 @@ per-function Call Stack tree is the reliable level.** Pair it with the MSL from
   In a latency-bound shader (low limiters, about 20% occupancy, 252 registers), replacing a
   function listed at 18% saved 3% of the pass. An ablation that removed it outright saved 6%.
   Use the tree to choose targets, then measure the change with alternated runs.
-- Per-function rows repeat under each call site, such as `water_foam_and_depth` called twice.
-  Sum them before ranking.
+- Per-function rows repeat under each call site in Xcode's Call Stack view, such as
+  `water_foam_and_depth` called twice. Sum them before ranking. `shader_line_costs` shows
+  Xcode's single declaration-line value; per-line rows don't double count.
 - What paid off instead was cutting spills. In the same shader, sharing one LOD slice choice
   across six texture reads cut spills from 3,120 to 816 bytes per thread, at the same 126
   registers. The pass went from 26 to 8.9 ms. Track `spill` in `gputrace_stats.py` for each change:

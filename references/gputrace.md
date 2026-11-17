@@ -47,6 +47,7 @@ fragment shader is ~17,000 instructions of ALU at 61 registers.
 ## What it can't give
 
 Per-draw GPU time, counters and shader cost come from a replay of the capture. `gpudebug`
-(macOS 27.2) gives per-draw times and counters from the CLI. Xcode's GUI also shows per-function
-shader cost, which `scripts/xcode_ax.swift` can read. See `references/xcode-gpu-debugger.md`.
+(macOS 27.2) gives per-draw times and counters from the CLI. With that profile embedded,
+`scripts/shader_line_costs` prints per-line and per-function shader cost, the numbers in Xcode's
+source pane, without the GUI. See `references/xcode-gpu-debugger.md`.
 Xcode's MCP server (`xcrun mcpbridge`) has no tool for capture or the Metal debugger.

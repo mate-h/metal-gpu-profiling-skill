@@ -1,0 +1,15 @@
+#!/bin/sh
+# Per-source-line shader cost from a .gputrace with an embedded profile (no Xcode GUI).
+# Builds shader_line_costs.m on first use (or when it changes) and runs it. See the .m for options:
+#   shader_line_costs <x.gputrace> --list
+#   shader_line_costs <x.gputrace> --encoder <label> [--stage kernel|vertex|fragment] [--top N] [--json]
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+src="$here/shader_line_costs.m"
+bin="${SHADER_LINE_COSTS_BIN:-${METAL_DEBUG_MCP_DIR:-$HOME/Library/Caches/metal-debug-mcp}/shader_line_costs}"
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    mkdir -p "$(dirname "$bin")"
+    xcrun clang -O2 -fobjc-arc -framework Foundation "$src" -o "$bin" \
+        -Wl,-rpath,/Applications/Xcode.app/Contents/SharedFrameworks >&2
+fi
+exec "$bin" "$@"

@@ -88,7 +88,7 @@ let tools: [Tool] = [
     ),
     Tool(
         name: "delete_capture",
-        description: "Delete a capture from the server's capture folder (captures elsewhere are left alone).",
+        description: "Delete a capture from the server's capture folder (captures elsewhere are left alone), then delete the shader archive folders Metal leaves per process in the user cache (com.apple.gpuarchiver; they reached 15 GB) that no running process holds.",
         inputSchema: schema(["capture": prop("string", "capture path or name")], required: ["capture"]),
         annotations: .init(destructiveHint: true)
     ),
@@ -143,6 +143,25 @@ let tools: [Tool] = [
         annotations: .init(readOnlyHint: true)
     ),
     Tool(
+        name: "line_costs",
+        description: "Per-source-line shader cost (line, percent, MSL text) for an encoder's or pipeline's shader, read from the profile embedded in the capture: the numbers Xcode's shader source pane shows, without the GUI. Function rows (f) are inclusive costs on each function's declaration line, like Xcode. CPU only (no replay, no GPU), ~15 s; profiles the capture first if it has no embedded profile (a GPU job). Use list to see encoder labels and pipeline ids. Percentages are shares of sampled cost, not savings.",
+        inputSchema: schema([
+            "capture": prop("string", "capture path or name"),
+            "encoder_label": prop("string", "label of the render or compute encoder; all encoders with it are summed (exact match, else substring)"),
+            "pipeline": prop("integer", "pipeline state object id (from list), instead of or with encoder_label"),
+            "stage": prop("string", "kernel, vertex or fragment (default: the stage with the most cost)", ["enum": ["kernel", "vertex", "fragment"]]),
+            "occurrence": prop("integer", "only the Nth encoder with that label (1-based)"),
+            "scope": prop("string", "cost scope: encoder (default with encoder_label), pipeline, or trace", ["enum": ["encoder", "pipeline", "trace"]]),
+            "top": prop("integer", "only the N most expensive lines, sorted by cost (default 60; 0 = every line, in source order)"),
+            "min_pct": prop("number", "hide lines below this percent (default 0.01)"),
+            "functions": prop("boolean", "include inclusive per-function rows (default true)"),
+            "list": prop("boolean", "list encoders, their labels, pipelines and stages instead"),
+            "save_source": prop("boolean", "also save the shader's MSL source to a file and return its path"),
+            "json": prop("boolean", "structured output (default false: a table)"),
+        ], required: ["capture"]),
+        annotations: .init(readOnlyHint: true)
+    ),
+    Tool(
         name: "record_passes",
         description: "Exact per-pass GPU time of a live app with an xctrace Metal System Trace (attaches to a warmed-up process), optionally with hardware counters per pass and the shader timeline. Live timings move with other GPU load: compare old/new builds by alternating runs. Saving the trace takes minutes. Refuses while a capture is open in Xcode (it hung recordings); close it with xcode_close.",
         inputSchema: schema([
@@ -171,7 +190,7 @@ let tools: [Tool] = [
     ),
     Tool(
         name: "xcode_call_stack",
-        description: "Per-function inclusive cost tree of the shader used by an encoder, from Xcode's shader source pane (Call Stack view). Drives the GUI: filters the Debug navigator by the encoder label, clicks its first draw or dispatch, opens the fragment/vertex/kernel function and reads the tree. Percentages are shares of sampled cost, not savings; functions called twice appear twice, so sum them. Per-line cost isn't available.",
+        description: "Per-function inclusive cost tree of the shader used by an encoder, from Xcode's shader source pane (Call Stack view). Drives the GUI: filters the Debug navigator by the encoder label, clicks its first draw or dispatch, opens the fragment/vertex/kernel function and reads the tree. Percentages are shares of sampled cost, not savings; functions called twice appear twice, so sum them. Prefer line_costs: the same data per line and per function, without the GUI.",
         inputSchema: schema([
             "encoder_label": prop("string", "label of the render or compute encoder (as in replay_encoders)"),
             "stage": prop("string", "fragment, vertex or kernel (default: fragment for render passes, kernel for compute)", ["enum": ["fragment", "vertex", "kernel"]]),
@@ -204,9 +223,16 @@ struct Handlers: Sendable {
         switch name {
         case "environment": return try await environment()
         case "list_captures": return listCaptures()
-        case "delete_capture": return try deleteCapture(try a.need("capture"))
+        case "delete_capture": return try await deleteCapture(try a.need("capture"))
         case "compiler_stats": return try await compilerStats(try paths.capture(try a.need("capture")), a.string("remarks_id"))
         case "xcode_ui": return try await gate.exclusive("xcode_ui") { try await xcodeUI(a.strings("args") ?? []) }
+        case "line_costs":
+            // CPU only, so it skips the GPU queue, except to embed a profile first.
+            let t = try paths.capture(try a.need("capture"))
+            if !GPUDebug.isProfiled(t) {
+                try await gate.exclusive("replay_profile") { try await withHeartbeat(server, progress, name) { try await ensureProfiled(t); return "" } }
+            }
+            return try await withHeartbeat(server, progress, name) { try await lineCosts(t, a) }
         default: break
         }
         // Everything else uses the GPU or drives Xcode: one at a time.
@@ -265,9 +291,14 @@ struct Handlers: Sendable {
         env["xcode_capture_windows"] = await openCaptureWindows()
         env["skill"] = paths.skill.path
         env["capture_folder"] = paths.captures.path
+        let archiverMB = Handlers.gpuArchiverCacheMB()
+        env["gpu_archiver_cache_mb"] = archiverMB
         var notes: [String] = []
         if !AXIsProcessTrusted() {
             notes.append("xcode_* tools need Accessibility permission for the app that runs this server (System Settings > Privacy & Security > Accessibility)")
+        }
+        if archiverMB > 2000 {
+            notes.append("Metal's per-process shader archive cache holds \(Int(archiverMB)) MB; run scripts/gpu_cache_cleanup.sh (delete_capture also runs it)")
         }
         if !(env["gpudebug"] as? Bool ?? false) { notes.append("no /usr/bin/gpudebug: replay_* tools need macOS 27.2 or later") }
         env["notes"] = notes
@@ -286,14 +317,26 @@ struct Handlers: Sendable {
         return jsonText(["folder": paths.captures.path, "captures": rows])
     }
 
-    func deleteCapture(_ arg: String) throws -> String {
+    /// Metal leaves a gpuarchiver-* folder per process in the user cache (up to ~60 MB each, never
+    /// removed); scripts/gpu_cache_cleanup.sh deletes the ones no process holds.
+    func cleanGPUArchiverCache() async -> String {
+        let r = try? await run("/bin/sh", [paths.script("gpu_cache_cleanup.sh")], timeout: 300)
+        return r.map { $0.combined } ?? "cleanup failed"
+    }
+
+    static func gpuArchiverCacheMB() -> Double {
+        let cache = (NSTemporaryDirectory() as NSString).deletingLastPathComponent + "/C/com.apple.gpuarchiver"
+        return megabytes(sizeOnDisk(cache))
+    }
+
+    func deleteCapture(_ arg: String) async throws -> String {
         let p = try paths.capture(arg)
         let inside = URL(fileURLWithPath: p).standardizedFileURL.path
             .hasPrefix(paths.captures.standardizedFileURL.path + "/")
         guard inside else { throw ToolError("\(p) is outside the server's capture folder; delete it yourself") }
         let size = megabytes(sizeOnDisk(p))
         try FileManager.default.removeItem(atPath: p)
-        return jsonText(["deleted": p, "freed_mb": size])
+        return jsonText(["deleted": p, "freed_mb": size, "gpu_archiver_cache": await cleanGPUArchiverCache()])
     }
 
     func capture(pid: Int, ms: Int, name: String?) async throws -> String {
@@ -329,6 +372,39 @@ struct Handlers: Sendable {
         if text.hasPrefix("0 pipelines") {
             text += "\nThis capture has no stored compiler statistics. replay_shaders gives registers, spills and the instruction mix for any capture."
         }
+        return text
+    }
+
+    /// Runs scripts/shader_line_costs (it builds scripts/shader_line_costs.m into the work folder).
+    func lineCosts(_ trace: String, _ a: Args) async throws -> String {
+        var args = [trace]
+        if a.bool("list") == true {
+            args.append("--list")
+        } else {
+            guard a.string("encoder_label") != nil || a.int("pipeline") != nil else {
+                throw ToolError("give encoder_label or pipeline (list shows them)")
+            }
+            if let l = a.string("encoder_label") { args += ["--encoder", l] }
+            if let p = a.int("pipeline") { args += ["--pipeline", String(p)] }
+            if let s = a.string("stage") { args += ["--stage", s] }
+            if let o = a.int("occurrence") { args += ["--occurrence", String(o)] }
+            if let s = a.string("scope") { args += ["--scope", s] }
+            let top = a.int("top") ?? 60
+            if top > 0 { args += ["--top", String(top)] }
+            if let m = a["min_pct"]?.doubleValue ?? a.int("min_pct").map(Double.init) { args += ["--min", String(m)] }
+            if a.bool("functions") == false { args.append("--no-functions") }
+            if a.bool("save_source") == true {
+                let out = paths.work.appendingPathComponent("source-\(URL(fileURLWithPath: trace).deletingPathExtension().lastPathComponent)-\(a.string("encoder_label") ?? String(a.int("pipeline") ?? 0)).metal").path
+                args += ["--source-out", out]
+            }
+        }
+        if a.bool("json") == true { args.append("--json") }
+        let r = try await run(paths.script("shader_line_costs"), args,
+                              env: ["SHADER_LINE_COSTS_BIN": paths.work.appendingPathComponent("shader_line_costs").path], timeout: 900)
+        guard r.ok else { throw ToolError(r.combined.isEmpty ? "shader_line_costs failed (exit \(r.status))" : r.combined) }
+        var text = r.stdout
+        let warnings = r.stderr.split(separator: "\n").filter { $0.hasPrefix("shader_line_costs:") }
+        if !warnings.isEmpty { text += "\n" + warnings.joined(separator: "\n") }
         return text
     }
 
