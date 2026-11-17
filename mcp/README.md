@@ -1,6 +1,6 @@
 # metal-debug-mcp
 
-An MCP server for Metal GPU debugging on Apple Silicon. It exposes the skill's capture, replay and recording scripts as tools, along with the parts of Xcode's Metal debugger that only the GUI shows. It's a single Swift binary that talks MCP over stdio.
+An MCP server for Metal GPU debugging on Apple Silicon. It exposes the skill's capture, replay and recording scripts as tools, per-line shader cost read straight from a capture's profile (`line_costs`), and, as a fallback, the Xcode Metal debugger GUI. It's a single Swift binary that talks MCP over stdio.
 
 | Tool | What it does | Built on |
 |---|---|---|
@@ -54,7 +54,7 @@ Any other MCP client can run the same binary over stdio. Recording and replaying
 swift build -c release && MTL_CAPTURE_ENABLED=1 .build/release/metal-debug-sample &
 ```
 
-Then call `capture` with its pid, followed by `replay_encoders`, `replay_shaders`, `xcode_open` and `xcode_call_stack` with `encoder_label` `noise_pass`. The kernel's tree should split its cost mostly between `sin` and `cos`.
+Then call `capture` with its pid, followed by `replay_encoders`, `replay_shaders` and `line_costs` with `encoder_label` `noise_pass`. The kernel's cost should sit mostly on its `sin` and `cos` lines. `xcode_open` + `xcode_call_stack` check the same tree in the GUI.
 
 ## Files and settings
 
@@ -66,5 +66,5 @@ Then call `capture` with its pid, followed by `replay_encoders`, `replay_shaders
 - **The `xcode_*` tools depend on Xcode's UI:** labels such as "Open Performance", "Filter the trace list" and "Fragment Function", and the Call Stack popup. An Xcode update can break them. `xcode_ui` (`tree`, `press`, `locate`, `click`, ...) lets you work around a break and find the fix.
 - **One capture window at a time.** In the Performance view, a capture window's title is empty, so `xcode_open` closes other capture windows first.
 - **`xcode_call_stack` uses the first draw or dispatch** under encoders whose label contains `encoder_label`.
-- **No per-line cost.** Accessibility can't map the cost pies to source lines.
+- **The `xcode_*` tools are a fallback.** For per-line or per-function cost use `line_costs`, not the GUI: accessibility can't map Xcode's cost pies to source lines, and screenshots + OCR are slow and take over the screen.
 - **Replay can silently drop render passes.** `replay_encoders` warns when it does.

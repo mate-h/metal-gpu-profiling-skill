@@ -176,7 +176,7 @@ let tools: [Tool] = [
     ),
     Tool(
         name: "xcode_open",
-        description: "Open a capture in Xcode's Metal debugger with its replay profile embedded (profiling first if needed) and switch to the Performance view. Takes over the screen: Xcode comes to the front and later xcode_* tools click in it.",
+        description: "Open a capture in Xcode's Metal debugger with its replay profile embedded (profiling first if needed) and switch to the Performance view. Takes over the screen: Xcode comes to the front and later xcode_* tools click in it. Fallback only: line_costs gives per-line and per-function shader cost without the GUI.",
         inputSchema: schema([
             "capture": prop("string", "capture path or name"),
             "profile": prop("boolean", "embed a replay profile first if missing (default true)"),

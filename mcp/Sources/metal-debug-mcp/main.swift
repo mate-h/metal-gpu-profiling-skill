@@ -9,8 +9,9 @@ import MCP
 let instructions = """
 Metal GPU debugging on this Mac. Typical flow: environment → start the app with MTL_CAPTURE_ENABLED=1 \
 and let it warm up → capture(pid) → replay_encoders (find the expensive pass) → replay_encoder \
-(its limiters: the bound unit) → replay_shaders (registers, spills, instruction mix) → optionally \
-xcode_open + xcode_call_stack for the per-function cost inside one shader. record_passes measures a \
+(its limiters: the bound unit) → replay_shaders (registers, spills, instruction mix) → line_costs \
+(per-line and per-function cost inside one shader: review it line by line). Prefer line_costs over \
+the xcode_* GUI tools and never screenshot Xcode for these numbers. record_passes measures a \
 live app with xctrace instead (moves with other GPU load; alternate old/new runs). Captures are large: \
 delete_capture when done. GPU jobs run one at a time. The xcode_* tools take over the screen.
 """

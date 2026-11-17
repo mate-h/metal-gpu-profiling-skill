@@ -1,8 +1,14 @@
 # Replayed GPU profiles: gpudebug and Xcode's Metal debugger
 
 A replay of a `.gputrace` runs each pass alone, so its times don't move when other apps share the
-GPU, which xctrace recordings do. It also gives per-draw shader counters, per-function shader
-cost, register counts and spills. Learned on an M5 with macOS 27.2 and Xcode 27.2 (Nov 2026).
+GPU, which xctrace recordings do. It also gives per-draw shader counters, per-line and
+per-function shader cost, register counts and spills. Learned on an M5 with macOS 27.2 and
+Xcode 27.2 (Nov 2026).
+
+**For cost inside a shader, use `scripts/shader_line_costs` (MCP `line_costs`) on the profiled
+capture and review its line-by-line output.** Don't screenshot Xcode's source pane and OCR it, and
+don't drive the GUI for numbers the tool prints. The Xcode GUI section below is for the rare thing
+the tool doesn't show.
 
 ## Capture
 
@@ -122,7 +128,11 @@ How it works, for when an Xcode update breaks it (all private API, loaded with `
 6. Source: the capture stores each MSL source as a hash-named text file in the bundle. The tool
    picks the one that defines the most of the binary's functions.
 
-## Xcode GUI: per-function cost tree and registers
+## Xcode GUI (fallback): cost tree, Shaders table, registers
+
+Use `shader_line_costs` first: it covers per-line and per-function cost. The GUI is left for
+looking at something it doesn't print, such as Xcode's Shaders table with allocated registers, or
+to check a surprising number by eye. It takes over the screen, so say why it is needed.
 
 `open -a Xcode x.gputrace`. With an embedded profile, Xcode opens straight to Performance.
 
@@ -196,19 +206,20 @@ The terminal needs Accessibility permission.
   showed 252 allocated registers and 3.08 KiB spilled there, against 126 temporary registers and
   3,152 stack bytes in the compiler statistics.
 
-## Per-line cost through accessibility: don't
+## Per-line cost from the GUI: don't (screenshots, OCR, accessibility)
 
-Use `scripts/shader_line_costs` instead. The source pane's cost pies (`CostElement<pct>`) can be
-read through accessibility, but their views are recycled and keep stale positions, so they can't
-be mapped to lines. Screenshot + OCR sweeps of the gutter worked but took about 2 minutes per
-shader and took over the screen.
+Use `scripts/shader_line_costs`. Reading per-line cost off Xcode was tried and is superseded:
+- Screenshot + Vision OCR sweeps of the source pane's gutter worked, but took about 2 minutes per
+  shader, took over the screen, misread some characters and gave only the rounded figures.
+- The cost pies (`CostElement<pct>`) can be read through accessibility, but their views are
+  recycled and keep stale positions, so they can't be mapped to lines.
 
 ## Reading the costs
 
 - Percentages are inclusive shares of the shader's sampled cost, not time a change will save.
   In a latency-bound shader (low limiters, about 20% occupancy, 252 registers), replacing a
   function listed at 18% saved 3% of the pass. An ablation that removed it outright saved 6%.
-  Use the tree to choose targets, then measure the change with alternated runs.
+  Use the line and function rows to choose targets, then measure the change with alternated runs.
 - Per-function rows repeat under each call site in Xcode's Call Stack view, such as
   `water_foam_and_depth` called twice. Sum them before ranking. `shader_line_costs` shows
   Xcode's single declaration-line value; per-line rows don't double count.
